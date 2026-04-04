@@ -38,15 +38,18 @@ jobs:
           COOKIE_STORAGE_PATH: '/tmp/104_session'
         run: |
           python -c "
+          # 1. Seed 職缺資料
+          from app.seed_jobs import seed
+          seed()
+
+          # 2. 執行搜尋
           import asyncio
-          from app.database import Base, engine
-          from app.models.job import JobDescription
           from app.database import SessionLocal
+          from app.models.job import JobDescription
           from app.services.search_service import search_and_score
           from app.services.notifier import notify_search_results, notify_error
 
           async def main():
-              Base.metadata.create_all(bind=engine)
               db = SessionLocal()
               all_results = []
               try:

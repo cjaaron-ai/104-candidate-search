@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
-from playwright_stealth import stealth_async
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +66,33 @@ class Crawler104:
         self._pw = None
         # CAPTCHA 偵測回呼，由外部設定（例如發送 Telegram 通知）
         self.on_captcha_detected = None
+
+    @staticmethod
+    async def _apply_stealth(page: Page):
+        """手動注入反偵測腳本，隱藏 Playwright 自動化特徵"""
+        stealth_scripts = [
+            # 隱藏 navigator.webdriver
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});",
+            # 偽造 plugins
+            """Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5],
+            });""",
+            # 偽造 languages
+            """Object.defineProperty(navigator, 'languages', {
+                get: () => ['zh-TW', 'zh', 'en-US', 'en'],
+            });""",
+            # 隱藏 chrome runtime
+            "window.chrome = { runtime: {} };",
+            # 偽造 permissions
+            """const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );""",
+        ]
+        for script in stealth_scripts:
+            await page.add_init_script(script)
 
     async def _random_delay(self, min_sec: float = 1.0, max_sec: float = 3.0):
         """隨機等待，模擬人類操作節奏"""
@@ -155,8 +181,8 @@ class Crawler104:
             timezone_id="Asia/Taipei",
         )
         self.page = await self.context.new_page()
-        # 套用 stealth 插件，隱藏自動化特徵
-        await stealth_async(self.page)
+        # 手動注入反偵測腳本（取代 playwright-stealth）
+        await self._apply_stealth(self.page)
         logger.info("瀏覽器已啟動（含反偵測）")
 
     async def login(self) -> bool:
