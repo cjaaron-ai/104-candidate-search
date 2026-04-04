@@ -1,0 +1,72 @@
+name: 每日 104 人選搜尋
+
+on:
+  schedule:
+    # 每天 00:00 UTC = 08:00 Asia/Taipei
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # 支援手動觸發
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps
+
+      - name: Run search
+        env:
+          ACCOUNT_104_USERNAME: ${{ secrets.ACCOUNT_104_USERNAME }}
+          ACCOUNT_104_PASSWORD: ${{ secrets.ACCOUNT_104_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCORECARD_THRESHOLD: '70.0'
+          DATABASE_URL: 'sqlite:///./candidates.db'
+          COOKIE_STORAGE_PATH: '/tmp/104_session'
+        run: |
+          python -c "
+          import asyncio
+          from app.database import Base, engine
+          from app.models.job import JobDescription
+          from app.database import SessionLocal
+          from app.services.search_service import search_and_score
+          from app.services.notifier import notify_search_results, notify_error
+
+          async def main():
+              Base.metadata.create_all(bind=engine)
+              db = SessionLocal()
+              all_results = []
+              try:
+                  jobs = db.query(JobDescription).filter(JobDescription.is_active == 1).all()
+                  if not jobs:
+                      print('沒有啟用中的職缺，跳過搜尋')
+                      return
+                  for job in jobs:
+                      try:
+                          result = await search_and_score(job.id, db)
+                          all_results.append(result)
+                          print(f'✅ {job.title}: {result[\"total_candidates\"]} 位候選人')
+                      except Exception as e:
+                          print(f'❌ {job.title} 失敗: {e}')
+                          await notify_error(f'職缺「{job.title}」搜尋失敗: {e}')
+              finally:
+                  db.close()
+              if all_results:
+                  await notify_search_results(all_results)
+                  print('📱 Telegram 通知已發送')
+
+          asyncio.run(main())
+          "
