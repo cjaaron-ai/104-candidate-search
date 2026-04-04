@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.models.job import JobDescription
 from app.models.candidate import Candidate, CandidateScore
 from app.services.scorecard import score_candidate
+from app.services.notifier import notify_captcha
 from app.config import settings
 from crawler.crawler_104 import Crawler104, CandidateData
 
@@ -34,13 +35,19 @@ async def search_and_score(job_id: int, db: Session) -> dict:
     if job.title:
         keywords.insert(0, job.title)
 
-    # 2. 呼叫爬蟲搜尋
-    crawler = Crawler104(settings.account_104_username, settings.account_104_password)
+    # 2. 呼叫爬蟲搜尋（含 CAPTCHA 偵測回呼）
+    crawler = Crawler104(
+        settings.account_104_username,
+        settings.account_104_password,
+        cookie_storage_path=settings.cookie_storage_path,
+    )
+    crawler.on_captcha_detected = notify_captcha
+
     try:
         await crawler.start()
         logged_in = await crawler.login()
         if not logged_in:
-            raise RuntimeError("104 login failed")
+            raise RuntimeError("104 登入失敗")
 
         raw_candidates = await crawler.search_candidates(
             keywords=keywords,
