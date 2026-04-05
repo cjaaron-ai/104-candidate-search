@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models.candidate import Candidate, CandidateScore
 from app.models.job import JobDescription
 from app.services.search_service import search_and_score
+from app.services.profile_enrichment import enrich_candidate_profile
 from app.config import settings
 
 router = APIRouter(prefix="/api/search", tags=["Search"])
@@ -99,3 +100,24 @@ def update_candidate_status(
     candidate.status = status
     db.commit()
     return {"message": f"Candidate {candidate_id} status updated to {status}"}
+
+
+@router.post("/candidates/{candidate_id}/enrich")
+async def trigger_enrich_candidate(candidate_id: int, db: Session = Depends(get_db)):
+    """爬取候選人完整履歷以豐富化資料"""
+    try:
+        candidate = await enrich_candidate_profile(candidate_id, db)
+        return {
+            "id": candidate.id,
+            "name": candidate.name,
+            "profile_scraped": candidate.profile_scraped,
+            "industry": candidate.industry,
+            "skills": candidate.skills,
+            "certifications": candidate.certifications,
+            "work_history": candidate.work_history,
+            "languages": candidate.languages,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))

@@ -51,10 +51,40 @@ class CandidateData:
     expected_salary_max: int = 0
     profile_url: str = ""
     raw_data: str = ""
+    # V2: 完整履歷欄位
+    certifications: list[str] = field(default_factory=list)
+    languages: list[dict] = field(default_factory=list)
+    work_history: list[dict] = field(default_factory=list)
+    autobiography: str = ""
+
+
+@dataclass
+class JobPostingData:
+    """從 104 公開職缺頁面解析的結構化資料"""
+    source: str = "104"
+    source_id: str = ""
+    source_url: str = ""
+    title: str = ""
+    company: str = ""
+    industry: str = ""
+    required_skills: list[str] = field(default_factory=list)
+    preferred_skills: list[str] = field(default_factory=list)
+    min_experience_years: int = 0
+    max_experience_years: int | None = None
+    education_level: str = ""
+    location: str = ""
+    salary_min: int = 0
+    salary_max: int = 0
+    salary_type: str = ""
+    benefits: list[str] = field(default_factory=list)
+    description: str = ""
+    full_description: str = ""
+    raw_data: str = ""
 
 
 class Crawler104:
-    BASE_URL = "https://pro.104.com.tw"
+    BASE_URL = "https://vip.104.com.tw"
+    PUBLIC_URL = "https://www.104.com.tw"
     MAX_RETRIES = 3
 
     def __init__(self, username: str, password: str, cookie_storage_path: str = "/tmp/104_session"):
@@ -473,6 +503,370 @@ class Crawler104:
         if "高中" in text:
             return "高中"
         return ""
+
+    # === V2: 新增方法 ===
+
+    async def _ensure_browser(self):
+        """確保瀏覽器已啟動"""
+        if not self.browser:
+            await self.start()
+
+    async def _ensure_logged_in(self):
+        """確保已登入企業端"""
+        await self._ensure_browser()
+        if not self.page:
+            return False
+        try:
+            current_url = self.page.url
+            if self.BASE_URL in current_url and "login" not in current_url.lower():
+                return True
+        except Exception:
+            pass
+        return await self.login()
+
+    async def scrape_job_posting(self, job_url: str) -> JobPostingData:
+        """
+        爬取 104 公開職缺頁面。
+        URL 格式: https://www.104.com.tw/job/xxxxx
+        策略: 優先嘗試 AJAX API，失敗則 fallback 到 HTML 解析。
+        """
+        import re
+        import httpx
+
+        # 從 URL 提取 job ID
+        match = re.search(r"/job/([a-zA-Z0-9]+)", job_url)
+        if not match:
+            raise ValueError(f"無效的 104 職缺 URL: {job_url}")
+
+        job_id = match.group(1)
+        result = JobPostingData(source_url=job_url, source_id=job_id)
+
+        # 嘗試 AJAX API
+        try:
+            ajax_url = f"{self.PUBLIC_URL}/job/ajax/content/{job_id}"
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    ajax_url,
+                    headers={
+                        "Referer": job_url,
+                        "User-Agent": random.choice(_USER_AGENTS),
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json().get("data", {})
+                    result = self._parse_job_ajax(data, job_url, job_id)
+                    logger.info(f"AJAX 解析成功: {result.title}")
+                    return result
+        except Exception as e:
+            logger.info(f"AJAX 解析失敗，改用 HTML: {e}")
+
+        # Fallback: Playwright HTML 解析
+        await self._ensure_browser()
+        page = await self.context.new_page()
+        try:
+            await page.goto(job_url)
+            await page.wait_for_load_state("networkidle")
+            await self._random_delay()
+
+            result.title = await self._safe_text(page, 'h1, [class*="job-header"] h1, .job-title')
+            result.company = await self._safe_text(page, '[class*="company-name"], .company-name a')
+            result.location = await self._safe_text(page, '[class*="job-address"], .job-address')
+            result.industry = await self._safe_text(page, '[class*="category"], .category')
+
+            salary_text = await self._safe_text(page, '[class*="salary"], .salary')
+            result.salary_min, result.salary_max, result.salary_type = self._parse_salary_text(salary_text)
+
+            exp_text = await self._safe_text(page, '[class*="experience"], .experience')
+            result.min_experience_years = self._parse_experience(exp_text)
+
+            edu_text = await self._safe_text(page, '[class*="education"], .education')
+            result.education_level = self._parse_education_level(edu_text)
+
+            skill_els = await page.query_selector_all('[class*="tag"], .tools .tag, .skill-tag')
+            for el in skill_els:
+                text = (await el.inner_text()).strip()
+                if text:
+                    result.required_skills.append(text)
+
+            benefit_els = await page.query_selector_all('[class*="welfare"] .tag, .welfare-tag')
+            for el in benefit_els:
+                text = (await el.inner_text()).strip()
+                if text:
+                    result.benefits.append(text)
+
+            desc_el = await page.query_selector('[class*="job-description"], .job-description')
+            if desc_el:
+                result.description = (await desc_el.inner_text()).strip()
+                result.full_description = await desc_el.inner_html()
+
+            result.raw_data = await page.content()
+            logger.info(f"HTML 解析成功: {result.title}")
+        finally:
+            await page.close()
+
+        return result
+
+    @staticmethod
+    def _parse_job_ajax(data: dict, job_url: str, job_id: str) -> JobPostingData:
+        """從 104 AJAX API 回應解析職缺資料"""
+        header = data.get("header", {})
+        condition = data.get("condition", {})
+        welfare = data.get("welfare", {})
+
+        result = JobPostingData(
+            source_url=job_url,
+            source_id=job_id,
+            title=header.get("jobName", ""),
+            company=header.get("custName", ""),
+            industry=condition.get("industry", ""),
+            location=condition.get("addressRegion", "") or header.get("areaDesc", ""),
+            education_level=Crawler104._parse_education_level(
+                " ".join(condition.get("edu", []) if isinstance(condition.get("edu"), list) else [str(condition.get("edu", ""))])
+            ),
+            description=data.get("jobDetail", {}).get("jobDescription", ""),
+            full_description=data.get("jobDetail", {}).get("jobDescription", ""),
+        )
+
+        # 技能
+        for skill in condition.get("skill", []):
+            if isinstance(skill, dict):
+                result.required_skills.append(skill.get("description", ""))
+            elif isinstance(skill, str):
+                result.required_skills.append(skill)
+        for spec in condition.get("specialty", []):
+            if isinstance(spec, dict):
+                result.required_skills.append(spec.get("description", ""))
+
+        # 薪資
+        salary_info = header.get("salary", "")
+        if isinstance(salary_info, str):
+            result.salary_min, result.salary_max, result.salary_type = Crawler104._parse_salary_text(salary_info)
+
+        # 經驗
+        exp_info = condition.get("workExp", "")
+        if isinstance(exp_info, str):
+            result.min_experience_years = Crawler104._parse_experience(exp_info)
+
+        # 福利
+        well_tags = welfare.get("welfare", "")
+        if isinstance(well_tags, str) and well_tags:
+            result.benefits = [w.strip() for w in well_tags.split("、") if w.strip()]
+        elif isinstance(well_tags, list):
+            result.benefits = well_tags
+
+        return result
+
+    @staticmethod
+    def _parse_salary_text(text: str) -> tuple[int, int, str]:
+        """解析薪資文字，回傳 (min, max, type)"""
+        import re
+        if not text:
+            return 0, 0, "negotiable"
+
+        salary_type = "monthly"
+        if "年薪" in text:
+            salary_type = "annual"
+        elif "面議" in text or "待遇面議" in text:
+            return 0, 0, "negotiable"
+
+        numbers = re.findall(r"[\d,]+", text.replace(",", ""))
+        nums = [int(n) for n in numbers if n]
+        if len(nums) >= 2:
+            return nums[0], nums[1], salary_type
+        elif len(nums) == 1:
+            return nums[0], nums[0], salary_type
+        return 0, 0, "negotiable"
+
+    async def _safe_text(self, page: Page, selector: str) -> str:
+        """安全取得元素文字"""
+        try:
+            el = await page.query_selector(selector)
+            if el:
+                return (await el.inner_text()).strip()
+        except Exception:
+            pass
+        return ""
+
+    async def scrape_candidate_profile(self, profile_url: str) -> CandidateData:
+        """
+        爬取企業端候選人完整履歷頁面（需登入）。
+        填充 V1 未取得的欄位：industry, salary, major, certifications, work_history 等。
+        """
+        await self._ensure_logged_in()
+
+        await self._random_delay(2.0, 4.0)
+        await self.page.goto(profile_url)
+        await self.page.wait_for_load_state("networkidle")
+        await self._random_delay()
+        await self._random_scroll()
+
+        if await self._check_captcha():
+            raise RuntimeError("履歷頁面偵測到 CAPTCHA")
+
+        candidate = CandidateData(profile_url=profile_url)
+        candidate.source_id = profile_url.split("/")[-1].split("?")[0]
+
+        # 基本資料
+        candidate.name = await self._safe_text(self.page, '.name, [class*="name"], h2, h3')
+        candidate.title = await self._safe_text(self.page, '.job-title, [class*="title"]')
+        candidate.location = await self._safe_text(self.page, '.location, [class*="location"]')
+
+        # 產業
+        candidate.industry = await self._safe_text(
+            self.page, '.industry, [class*="industry"], [class*="category"]'
+        )
+
+        # 工作經驗
+        exp_text = await self._safe_text(self.page, '.experience, [class*="exp-year"]')
+        candidate.experience_years = self._parse_experience(exp_text)
+
+        # 學歷
+        edu_text = await self._safe_text(self.page, '.education, [class*="edu"]')
+        candidate.education_level = self._parse_education_level(edu_text)
+        candidate.education_school = edu_text
+
+        major_text = await self._safe_text(self.page, '[class*="major"], .major')
+        candidate.education_major = major_text
+
+        # 技能
+        skill_els = await self.page.query_selector_all('.skill-tag, [class*="skill"] .tag, .expertise .tag')
+        candidate.skills = []
+        for el in skill_els:
+            text = (await el.inner_text()).strip()
+            if text:
+                candidate.skills.append(text)
+
+        # 薪資期望
+        salary_text = await self._safe_text(self.page, '[class*="salary"], .expected-salary')
+        candidate.expected_salary_min, candidate.expected_salary_max, _ = self._parse_salary_text(salary_text)
+
+        # 工作歷史
+        candidate.work_history = []
+        work_items = await self.page.query_selector_all(
+            '[class*="work-experience"] .item, .work-history .item, [class*="job-history"] li'
+        )
+        for item in work_items:
+            entry = {}
+            entry["company"] = await self._safe_text_el(item, '.company, [class*="company"]')
+            entry["title"] = await self._safe_text_el(item, '.title, [class*="title"]')
+            entry["duration"] = await self._safe_text_el(item, '.duration, [class*="duration"], .period')
+            entry["description"] = await self._safe_text_el(item, '.description, [class*="desc"]')
+            if entry.get("company") or entry.get("title"):
+                candidate.work_history.append(entry)
+
+        # 證照
+        candidate.certifications = []
+        cert_els = await self.page.query_selector_all('[class*="certificate"] .item, .certification li')
+        for el in cert_els:
+            text = (await el.inner_text()).strip()
+            if text:
+                candidate.certifications.append(text)
+
+        # 語言
+        candidate.languages = []
+        lang_els = await self.page.query_selector_all('[class*="language"] .item, .language li')
+        for el in lang_els:
+            text = (await el.inner_text()).strip()
+            if text:
+                candidate.languages.append({"language": text, "level": ""})
+
+        # 自傳
+        candidate.autobiography = await self._safe_text(
+            self.page, '[class*="autobiography"], .autobiography, .self-introduction'
+        )
+
+        candidate.raw_data = await self.page.content()
+        logger.info(f"完整履歷爬取成功: {candidate.name}")
+        return candidate
+
+    async def _safe_text_el(self, parent, selector: str) -> str:
+        """從父元素中安全取得子元素文字"""
+        try:
+            el = await parent.query_selector(selector)
+            if el:
+                return (await el.inner_text()).strip()
+        except Exception:
+            pass
+        return ""
+
+    async def search_jobs(
+        self,
+        keywords: list[str],
+        industry: str | None = None,
+        location: str | None = None,
+        max_pages: int = 3,
+    ) -> list[JobPostingData]:
+        """
+        搜尋 104 公開職缺列表（用於競爭分析）。
+        URL: https://www.104.com.tw/jobs/search/?keyword=...
+        """
+        import urllib.parse
+
+        await self._ensure_browser()
+
+        keyword_str = " ".join(keywords)
+        params = {"keyword": keyword_str, "order": 12}  # 12 = 日期排序
+        if location:
+            params["area"] = location
+        if industry:
+            params["indcat"] = industry
+
+        search_url = f"{self.PUBLIC_URL}/jobs/search/?{urllib.parse.urlencode(params)}"
+        job_postings = []
+
+        page = await self.context.new_page()
+        try:
+            await page.goto(search_url)
+            await page.wait_for_load_state("networkidle")
+            await self._random_delay()
+
+            for page_num in range(1, max_pages + 1):
+                logger.info(f"搜尋公開職缺第 {page_num} 頁...")
+                await self._random_scroll()
+
+                # 解析職缺卡片
+                cards = await page.query_selector_all(
+                    '.job-list-item, [class*="job-item"], article[class*="job"]'
+                )
+                for card in cards:
+                    try:
+                        link_el = await card.query_selector("a[href*='/job/']")
+                        if not link_el:
+                            continue
+                        href = await link_el.get_attribute("href")
+                        if not href:
+                            continue
+                        job_url = href if href.startswith("http") else f"{self.PUBLIC_URL}{href}"
+                        job_url = job_url.split("?")[0]
+
+                        await self._random_delay(3.0, 7.0)
+                        try:
+                            posting = await self.scrape_job_posting(job_url)
+                            job_postings.append(posting)
+                        except Exception as e:
+                            logger.warning(f"爬取職缺失敗 {job_url}: {e}")
+                    except Exception as e:
+                        logger.warning(f"解析職缺卡片失敗: {e}")
+
+                # 翻頁
+                if page_num < max_pages:
+                    await self._random_delay(2.0, 4.0)
+                    next_btn = await page.query_selector(
+                        'a.next, [class*="next"], button:has-text("下一頁")'
+                    )
+                    if not next_btn:
+                        break
+                    disabled = await next_btn.get_attribute("disabled")
+                    if disabled:
+                        break
+                    await next_btn.click()
+                    await page.wait_for_load_state("networkidle")
+
+        finally:
+            await page.close()
+
+        logger.info(f"共找到 {len(job_postings)} 筆競爭職缺")
+        return job_postings
 
     async def close(self):
         if self.context:

@@ -25,5 +25,11 @@ class JobDescriptionCreate(BaseModel):
 class JobDescriptionResponse(JobDescriptionCreate):
     id: int
     is_active: int
+    source_url: str | None = None
+    source_id: str | None = None
+    company: str | None = None
+    benefits: list[str] | None = None
+    salary_type: str | None = None
+    import_method: str = "manual"
 
     model_config = {"from_attributes": True}

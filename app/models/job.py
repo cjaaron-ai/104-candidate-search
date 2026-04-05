@@ -20,6 +20,15 @@ class JobDescription(Base):
     salary_min = Column(Integer)
     salary_max = Column(Integer)
 
+    # V2: URL 匯入相關欄位
+    source_url = Column(String(500))
+    source_id = Column(String(100))
+    company = Column(String(200))
+    benefits = Column(JSON)
+    salary_type = Column(String(20))        # monthly/annual/negotiable
+    full_description = Column(Text)
+    import_method = Column(String(20), default="manual")  # "manual" / "url"
+
     # Scorecard 權重設定
     weight_skills = Column(Float, default=30.0)
     weight_experience = Column(Float, default=25.0)

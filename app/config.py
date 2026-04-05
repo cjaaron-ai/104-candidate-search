@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # Claude API（用於 JD 優化 LLM 生成）
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-20250514"
+
     # 排程設定（cron 格式，空字串表示停用排程）
     schedule_cron_hour: str = ""
     schedule_cron_minute: str = "0"

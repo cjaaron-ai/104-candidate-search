@@ -24,6 +24,14 @@ class Candidate(Base):
     profile_url = Column(String(500))
     raw_data = Column(Text)  # 完整爬取資料 JSON
 
+    # V2: 完整履歷爬取欄位
+    certifications = Column(JSON)
+    languages = Column(JSON)
+    work_history = Column(JSON)
+    autobiography = Column(Text)
+    profile_scraped = Column(Integer, default=0)
+    last_scraped_at = Column(DateTime)
+
     # 狀態追蹤
     status = Column(String(20), default="new")  # new / contacted / interviewed / rejected / hired
     created_at = Column(DateTime, server_default=func.now())
