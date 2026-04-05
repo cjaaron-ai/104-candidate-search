@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # 排程設定（cron 格式，空字串表示停用排程）
+    schedule_cron_hour: str = ""
+    schedule_cron_minute: str = "0"
+    schedule_timezone: str = "Asia/Taipei"
+
     # Cookie 儲存路徑
     cookie_storage_path: str = "/tmp/104_session"
 

@@ -1,11 +1,12 @@
 """
-定期排程模組 — 每日自動對所有啟用中的 JD 執行搜尋與評分，並發送 Telegram 通知
+定期排程模組 — 可透過環境變數設定排程時間，或停用排程改用外部觸發（如 GitHub Actions）
 """
 
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models.job import JobDescription
 from app.services.search_service import search_and_score
@@ -48,19 +49,27 @@ async def scheduled_search_all():
 
 
 def start_scheduler():
+    if not settings.schedule_cron_hour:
+        logger.info("排程未設定（SCHEDULE_CRON_HOUR 為空），跳過排程啟動。請使用 API 或 GitHub Actions 手動觸發。")
+        return
+
     scheduler.add_job(
         scheduled_search_all,
         "cron",
-        hour=8,
-        minute=0,
-        timezone="Asia/Taipei",
+        hour=settings.schedule_cron_hour,
+        minute=settings.schedule_cron_minute,
+        timezone=settings.schedule_timezone,
         id="search_all_jobs",
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("排程已啟動，每日 08:00 (Asia/Taipei) 執行搜尋")
+    logger.info(
+        f"排程已啟動，每日 {settings.schedule_cron_hour}:{settings.schedule_cron_minute} "
+        f"({settings.schedule_timezone}) 執行搜尋"
+    )
 
 
 def stop_scheduler():
-    scheduler.shutdown()
-    logger.info("排程已停止")
+    if scheduler.running:
+        scheduler.shutdown()
+        logger.info("排程已停止")

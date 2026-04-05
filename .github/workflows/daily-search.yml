@@ -1,10 +1,7 @@
 name: 每日 104 人選搜尋
 
 on:
-  schedule:
-    # 每天 00:00 UTC = 08:00 Asia/Taipei
-    - cron: '0 0 * * *'
-  workflow_dispatch:  # 支援手動觸發
+  workflow_dispatch:  # 僅支援手動觸發，不再使用固定排程
 
 jobs:
   search:
