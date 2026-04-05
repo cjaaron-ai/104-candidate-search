@@ -1,16 +1,16 @@
 """
 JD URL 解析服務 — 三個 V2 Feature 的共用基礎
 
-從 104 職缺 URL 自動解析 JD 欄位，建立或更新 JobDescription。
+從 104 職缺 URL 自動解析 JD 欄位，建立 JobDescription。
 """
 
 import logging
-import re
 
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
 from app.config import settings
 from app.models.job import JobDescription
+from app.repositories.jobs import JobRepository
 from crawler.crawler_104 import Crawler104, JobPostingData
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ async def parse_jd_from_url(url: str) -> JobPostingData:
 
 async def create_job_from_url(
     url: str,
-    db: Session,
+    db: firestore.Client,
     overrides: dict | None = None,
 ) -> JobDescription:
     """解析 URL 建立 JD，支援覆蓋特定欄位"""
@@ -42,10 +42,8 @@ async def create_job_from_url(
     if overrides:
         fields.update({k: v for k, v in overrides.items() if v is not None})
 
-    job = JobDescription(**fields)
-    db.add(job)
-    db.commit()
-    db.refresh(job)
+    repo = JobRepository(db)
+    job = repo.create_job(fields)
     logger.info(f"已從 URL 建立 JD: {job.title} (id={job.id})")
     return job
 

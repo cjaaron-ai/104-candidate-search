@@ -1,19 +1,3 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
-
-from app.config import settings
-
-engine = create_engine(settings.database_url, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# Deprecated: 此檔案保留供向後參考。
+# 系統已遷移至 Firestore，請使用 app/firestore.py
+from app.firestore import get_db  # noqa: F401

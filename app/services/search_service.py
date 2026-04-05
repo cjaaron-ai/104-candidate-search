@@ -4,17 +4,17 @@
 負責：
 1. 從 JD 提取搜尋條件
 2. 呼叫 104 爬蟲搜尋人選
-3. 儲存候選人至資料庫
+3. 儲存候選人至 Firestore
 4. 執行 Scorecard 評分並排序
 """
 
-import json
 import logging
+from dataclasses import asdict
 
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
-from app.models.job import JobDescription
-from app.models.candidate import Candidate, CandidateScore
+from app.repositories.jobs import JobRepository
+from app.repositories.candidates import CandidateRepository, CandidateScoreRepository
 from app.services.scorecard import score_candidate
 from app.services.notifier import notify_captcha
 from app.config import settings
@@ -23,10 +23,13 @@ from crawler.crawler_104 import Crawler104, CandidateData
 logger = logging.getLogger(__name__)
 
 
-async def search_and_score(job_id: int, db: Session) -> dict:
+async def search_and_score(job_id: int, db: firestore.Client) -> dict:
     """對指定 JD 執行搜尋與評分流程"""
+    job_repo = JobRepository(db)
+    cand_repo = CandidateRepository(db)
+    score_repo = CandidateScoreRepository(db)
 
-    job = db.query(JobDescription).filter(JobDescription.id == job_id).first()
+    job = job_repo.get_job(job_id)
     if not job:
         raise ValueError(f"Job ID {job_id} not found")
 
@@ -35,7 +38,7 @@ async def search_and_score(job_id: int, db: Session) -> dict:
     if job.title:
         keywords.insert(0, job.title)
 
-    # 2. 呼叫爬蟲搜尋（含 CAPTCHA 偵測回呼）
+    # 2. 呼叫爬蟲搜尋
     crawler = Crawler104(
         settings.account_104_username,
         settings.account_104_password,
@@ -62,34 +65,25 @@ async def search_and_score(job_id: int, db: Session) -> dict:
     # 3. 儲存候選人並評分
     results = []
     for raw in raw_candidates:
-        candidate = _save_candidate(raw, db)
+        candidate = _save_candidate(raw, cand_repo)
 
-        # 排除已處理的人選
         if candidate.status in ("rejected", "hired"):
             continue
 
-        # 檢查是否已評分過
-        existing_score = (
-            db.query(CandidateScore)
-            .filter(CandidateScore.candidate_id == candidate.id, CandidateScore.job_id == job.id)
-            .first()
-        )
+        existing_score = score_repo.find_score(candidate.id, job.id)
         if existing_score:
             continue
 
-        # 評分
         scores = score_candidate(job, candidate)
 
-        score_record = CandidateScore(
-            candidate_id=candidate.id,
-            job_id=job.id,
+        score_data = {
+            "candidate_id": candidate.id,
+            "job_id": job.id,
             **{k: v for k, v in scores.items() if k != "score_details"},
-            score_details=scores["score_details"],
-        )
-        db.add(score_record)
+            "score_details": scores["score_details"],
+        }
+        score_repo.create_score(score_data)
         results.append({"candidate": candidate, "scores": scores})
-
-    db.commit()
 
     # 4. 依總分排序
     results.sort(key=lambda x: x["scores"]["total_score"], reverse=True)
@@ -105,46 +99,46 @@ async def search_and_score(job_id: int, db: Session) -> dict:
     }
 
 
-def _save_candidate(raw: CandidateData, db: Session) -> Candidate:
-    """儲存或更新候選人資料（跨平台去重）"""
-
-    # 先用 source + source_id 去重
-    existing = (
-        db.query(Candidate)
-        .filter(Candidate.source == raw.source, Candidate.source_id == raw.source_id)
-        .first()
-    )
+def _save_candidate(raw: CandidateData, cand_repo: CandidateRepository):
+    """儲存或更新候選人資料"""
+    existing = cand_repo.find_by_source(raw.source, raw.source_id)
 
     if existing:
-        # 更新資料
-        existing.title = raw.title or existing.title
-        existing.company = raw.company or existing.company
-        existing.skills = raw.skills or existing.skills
-        existing.experience_years = raw.experience_years or existing.experience_years
-        existing.education_level = raw.education_level or existing.education_level
-        existing.location = raw.location or existing.location
-        existing.raw_data = raw.raw_data or existing.raw_data
-        db.flush()
+        update_data = {}
+        if raw.title:
+            update_data["title"] = raw.title
+        if raw.company:
+            update_data["company"] = raw.company
+        if raw.skills:
+            update_data["skills"] = raw.skills
+        if raw.experience_years:
+            update_data["experience_years"] = raw.experience_years
+        if raw.education_level:
+            update_data["education_level"] = raw.education_level
+        if raw.location:
+            update_data["location"] = raw.location
+        if raw.raw_data:
+            update_data["raw_data"] = raw.raw_data
+        if update_data:
+            return cand_repo.update_candidate(existing.id, update_data)
         return existing
 
-    candidate = Candidate(
-        source=raw.source,
-        source_id=raw.source_id,
-        name=raw.name,
-        title=raw.title,
-        company=raw.company,
-        experience_years=raw.experience_years,
-        education_level=raw.education_level,
-        education_school=raw.education_school,
-        education_major=raw.education_major,
-        skills=raw.skills,
-        industry=raw.industry,
-        location=raw.location,
-        expected_salary_min=raw.expected_salary_min,
-        expected_salary_max=raw.expected_salary_max,
-        profile_url=raw.profile_url,
-        raw_data=raw.raw_data,
-    )
-    db.add(candidate)
-    db.flush()
-    return candidate
+    data = {
+        "source": raw.source,
+        "source_id": raw.source_id,
+        "name": raw.name,
+        "title": raw.title,
+        "company": raw.company,
+        "experience_years": raw.experience_years,
+        "education_level": raw.education_level,
+        "education_school": raw.education_school,
+        "education_major": raw.education_major,
+        "skills": raw.skills,
+        "industry": raw.industry,
+        "location": raw.location,
+        "expected_salary_min": raw.expected_salary_min,
+        "expected_salary_max": raw.expected_salary_max,
+        "profile_url": raw.profile_url,
+        "raw_data": raw.raw_data,
+    }
+    return cand_repo.create_candidate(data)

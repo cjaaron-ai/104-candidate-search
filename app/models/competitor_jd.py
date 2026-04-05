@@ -1,28 +1,26 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, ForeignKey, func
+from dataclasses import dataclass, field
+from datetime import datetime
 
-from app.database import Base
 
-
-class CompetitorJD(Base):
-    __tablename__ = "competitor_jds"
-
-    id = Column(Integer, primary_key=True, index=True)
-    analysis_id = Column(Integer, ForeignKey("jd_analyses.id"), index=True)
-    source_url = Column(String(500), nullable=False)
-    source_id = Column(String(100))
-    title = Column(String(200))
-    company = Column(String(200))
-    industry = Column(String(100))
-    required_skills = Column(JSON)
-    preferred_skills = Column(JSON)
-    min_experience_years = Column(Integer)
-    max_experience_years = Column(Integer)
-    education_level = Column(String(50))
-    location = Column(String(100))
-    salary_min = Column(Integer)
-    salary_max = Column(Integer)
-    salary_type = Column(String(20))
-    benefits = Column(JSON)
-    description = Column(Text)
-    raw_data = Column(Text)
-    created_at = Column(DateTime, server_default=func.now())
+@dataclass
+class CompetitorJD:
+    id: int = 0
+    analysis_id: int = 0
+    source_url: str = ""
+    source_id: str | None = None
+    title: str | None = None
+    company: str | None = None
+    industry: str | None = None
+    required_skills: list[str] | None = field(default_factory=list)
+    preferred_skills: list[str] | None = field(default_factory=list)
+    min_experience_years: int | None = None
+    max_experience_years: int | None = None
+    education_level: str | None = None
+    location: str | None = None
+    salary_min: int | None = None
+    salary_max: int | None = None
+    salary_type: str | None = None
+    benefits: list[str] | None = field(default_factory=list)
+    description: str | None = None
+    raw_data: str | None = None
+    created_at: datetime | None = None

@@ -8,12 +8,14 @@ import logging
 import statistics
 from datetime import datetime
 
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
 from app.config import settings
 from app.models.job import JobDescription
 from app.models.jd_analysis import JDAnalysis
 from app.models.competitor_jd import CompetitorJD
+from app.repositories.jobs import JobRepository
+from app.repositories.analyses import AnalysisRepository, CompetitorJDRepository
 from crawler.crawler_104 import Crawler104, JobPostingData
 
 logger = logging.getLogger(__name__)
@@ -21,32 +23,31 @@ logger = logging.getLogger(__name__)
 
 async def analyze_competitive_landscape(
     job_id: int,
-    db: Session,
+    db: firestore.Client,
     max_competitors: int = 10,
 ) -> JDAnalysis:
     """執行完整的競爭 JD 分析"""
-    job = db.query(JobDescription).filter(JobDescription.id == job_id).first()
+    job_repo = JobRepository(db)
+    analysis_repo = AnalysisRepository(db)
+    comp_repo = CompetitorJDRepository(db)
+
+    job = job_repo.get_job(job_id)
     if not job:
         raise ValueError(f"Job ID {job_id} not found")
 
-    analysis = JDAnalysis(
-        job_id=job.id,
-        analysis_type="competitive",
-        target_url=job.source_url,
-        status="processing",
-    )
-    db.add(analysis)
-    db.commit()
-    db.refresh(analysis)
+    analysis = analysis_repo.create_analysis({
+        "job_id": job.id,
+        "analysis_type": "competitive",
+        "target_url": job.source_url,
+        "status": "processing",
+    })
 
     try:
-        # 組合搜尋關鍵字
         keywords = []
         if job.title:
             keywords.append(job.title)
         keywords.extend((job.required_skills or [])[:3])
 
-        # 爬蟲搜尋競爭職缺
         crawler = Crawler104(
             settings.account_104_username,
             settings.account_104_password,
@@ -62,50 +63,47 @@ async def analyze_competitive_landscape(
         finally:
             await crawler.close()
 
-        # 儲存競爭 JD
         competitors = []
         for p in postings[:max_competitors]:
-            comp = CompetitorJD(
-                analysis_id=analysis.id,
-                source_url=p.source_url,
-                source_id=p.source_id,
-                title=p.title,
-                company=p.company,
-                industry=p.industry,
-                required_skills=p.required_skills,
-                preferred_skills=p.preferred_skills,
-                min_experience_years=p.min_experience_years,
-                max_experience_years=p.max_experience_years,
-                education_level=p.education_level,
-                location=p.location,
-                salary_min=p.salary_min,
-                salary_max=p.salary_max,
-                salary_type=p.salary_type,
-                benefits=p.benefits,
-                description=p.description,
-            )
-            db.add(comp)
+            comp = comp_repo.create_competitor({
+                "analysis_id": analysis.id,
+                "source_url": p.source_url,
+                "source_id": p.source_id,
+                "title": p.title,
+                "company": p.company,
+                "industry": p.industry,
+                "required_skills": p.required_skills,
+                "preferred_skills": p.preferred_skills,
+                "min_experience_years": p.min_experience_years,
+                "max_experience_years": p.max_experience_years,
+                "education_level": p.education_level,
+                "location": p.location,
+                "salary_min": p.salary_min,
+                "salary_max": p.salary_max,
+                "salary_type": p.salary_type,
+                "benefits": p.benefits,
+                "description": p.description,
+            })
             competitors.append(comp)
 
-        db.flush()
-
-        # 產生分析
         comparison = _generate_comparison(job, competitors)
         recommendations = _generate_recommendations(job, comparison)
         report = _generate_markdown_report(job, competitors, comparison, recommendations)
 
-        analysis.competitor_count = len(competitors)
-        analysis.summary = comparison
-        analysis.recommendations = recommendations
-        analysis.report_markdown = report
-        analysis.status = "completed"
-        analysis.completed_at = datetime.utcnow()
-        db.commit()
+        analysis = analysis_repo.update_analysis(analysis.id, {
+            "competitor_count": len(competitors),
+            "summary": comparison,
+            "recommendations": recommendations,
+            "report_markdown": report,
+            "status": "completed",
+            "completed_at": datetime.utcnow(),
+        })
 
     except Exception as e:
-        analysis.status = "failed"
-        analysis.summary = {"error": str(e)}
-        db.commit()
+        analysis_repo.update_analysis(analysis.id, {
+            "status": "failed",
+            "summary": {"error": str(e)},
+        })
         logger.error(f"競爭分析失敗: {e}")
         raise
 
@@ -117,7 +115,6 @@ def _generate_comparison(job: JobDescription, competitors: list[CompetitorJD]) -
     if not competitors:
         return {"message": "未找到競爭職缺", "competitor_count": 0}
 
-    # 薪資比較
     salary_maxes = [c.salary_max for c in competitors if c.salary_max]
     salary_mins = [c.salary_min for c in competitors if c.salary_min]
 
@@ -132,7 +129,6 @@ def _generate_comparison(job: JobDescription, competitors: list[CompetitorJD]) -
             sum(1 for s in salary_maxes if s <= job.salary_max) / len(salary_maxes) * 100
         )
 
-    # 技能頻率分析
     skill_freq = {}
     for c in competitors:
         for skill in (c.required_skills or []):
@@ -149,14 +145,12 @@ def _generate_comparison(job: JobDescription, competitors: list[CompetitorJD]) -
         "unique_skills_you_have": list(unique_skills)[:10],
     }
 
-    # 經驗比較
     exp_mins = [c.min_experience_years for c in competitors if c.min_experience_years]
     experience_comparison = {
         "user_range": f"{job.min_experience_years or 0}-{job.max_experience_years or '不限'}",
         "market_median_min": int(statistics.median(exp_mins)) if exp_mins else None,
     }
 
-    # 福利比較
     benefit_freq = {}
     for c in competitors:
         for b in (c.benefits or []):
@@ -185,7 +179,6 @@ def _generate_recommendations(job: JobDescription, comparison: dict) -> list[dic
     """將比較結果轉化為 actionable 建議"""
     recs = []
 
-    # 薪資建議
     salary = comparison.get("salary", {})
     if salary.get("market_max_median") and job.salary_max:
         market_median = salary["market_max_median"]
@@ -199,7 +192,6 @@ def _generate_recommendations(job: JobDescription, comparison: dict) -> list[dic
                 "suggestion": f"薪資上限低於市場中位 {gap_pct}%，建議調升至 {market_median} 以上",
             })
 
-    # 技能建議
     skills = comparison.get("skills", {})
     lacking = skills.get("skills_you_lack", [])
     if lacking:
@@ -211,7 +203,6 @@ def _generate_recommendations(job: JobDescription, comparison: dict) -> list[dic
             "suggestion": f"市場常見技能您的 JD 未列入：{', '.join(lacking[:5])}",
         })
 
-    # 福利建議
     benefits = comparison.get("benefits", {})
     lacking_benefits = benefits.get("common_benefits_you_lack", [])
     if lacking_benefits:
@@ -244,7 +235,6 @@ def _generate_markdown_report(
         f"",
     ]
 
-    # 薪資比較
     salary = comparison.get("salary", {})
     lines.extend([
         f"## 薪資比較",
@@ -257,20 +247,14 @@ def _generate_markdown_report(
         f"",
     ])
 
-    # 技能比較
     skills = comparison.get("skills", {})
-    lines.extend([
-        f"## 技能比較",
-        f"### 您缺少的市場常見技能",
-    ])
+    lines.extend([f"## 技能比較", f"### 您缺少的市場常見技能"])
     for s in skills.get("skills_you_lack", [])[:10]:
         lines.append(f"- {s}")
-
     lines.extend([f"", f"### 您的獨特技能"])
     for s in skills.get("unique_skills_you_have", [])[:10]:
         lines.append(f"- {s}")
 
-    # 建議
     lines.extend([f"", f"## 改善建議"])
     for i, rec in enumerate(recommendations, 1):
         priority_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(rec["priority"], "⚪")
@@ -280,7 +264,6 @@ def _generate_markdown_report(
         lines.append(f"- **建議**: {rec['suggestion']}")
         lines.append("")
 
-    # 競爭者列表
     lines.extend([f"## 競爭者列表", f"| 公司 | 職稱 | 薪資 | 地區 |", f"|---|---|---|---|"])
     for c in competitors:
         salary_str = f"{c.salary_min or '?'}-{c.salary_max or '?'}" if c.salary_min or c.salary_max else "面議"

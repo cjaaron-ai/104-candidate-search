@@ -1,57 +1,52 @@
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, JSON, func
+from dataclasses import dataclass, field
+from datetime import datetime
 
-from app.database import Base
 
-
-class Candidate(Base):
-    __tablename__ = "candidates"
-
-    id = Column(Integer, primary_key=True, index=True)
-    source = Column(String(20), nullable=False)  # "104" / "linkedin"
-    source_id = Column(String(100))  # 平台上的原始 ID
-    name = Column(String(100))
-    title = Column(String(200))
-    company = Column(String(200))
-    experience_years = Column(Integer)
-    education_level = Column(String(50))
-    education_school = Column(String(200))
-    education_major = Column(String(200))
-    skills = Column(JSON)  # ["Python", "SQL", ...]
-    industry = Column(String(100))
-    location = Column(String(100))
-    expected_salary_min = Column(Integer)
-    expected_salary_max = Column(Integer)
-    profile_url = Column(String(500))
-    raw_data = Column(Text)  # 完整爬取資料 JSON
+@dataclass
+class Candidate:
+    id: int = 0
+    source: str = "104"
+    source_id: str | None = None
+    name: str | None = None
+    title: str | None = None
+    company: str | None = None
+    experience_years: int | None = None
+    education_level: str | None = None
+    education_school: str | None = None
+    education_major: str | None = None
+    skills: list[str] | None = field(default_factory=list)
+    industry: str | None = None
+    location: str | None = None
+    expected_salary_min: int | None = None
+    expected_salary_max: int | None = None
+    profile_url: str | None = None
+    raw_data: str | None = None
 
     # V2: 完整履歷爬取欄位
-    certifications = Column(JSON)
-    languages = Column(JSON)
-    work_history = Column(JSON)
-    autobiography = Column(Text)
-    profile_scraped = Column(Integer, default=0)
-    last_scraped_at = Column(DateTime)
+    certifications: list | None = None
+    languages: list | None = None
+    work_history: list | None = None
+    autobiography: str | None = None
+    profile_scraped: int = 0
+    last_scraped_at: datetime | None = None
 
     # 狀態追蹤
-    status = Column(String(20), default="new")  # new / contacted / interviewed / rejected / hired
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    status: str = "new"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
-class CandidateScore(Base):
-    __tablename__ = "candidate_scores"
-
-    id = Column(Integer, primary_key=True, index=True)
-    candidate_id = Column(Integer, nullable=False, index=True)
-    job_id = Column(Integer, nullable=False, index=True)
-
-    score_skills = Column(Float, default=0)
-    score_experience = Column(Float, default=0)
-    score_education = Column(Float, default=0)
-    score_industry = Column(Float, default=0)
-    score_location = Column(Float, default=0)
-    score_salary = Column(Float, default=0)
-    total_score = Column(Float, default=0)
-
-    score_details = Column(JSON)  # 評分細節
-    created_at = Column(DateTime, server_default=func.now())
+@dataclass
+class CandidateScore:
+    id: int = 0
+    candidate_id: int = 0
+    job_id: int = 0
+    score_skills: float = 0.0
+    score_experience: float = 0.0
+    score_education: float = 0.0
+    score_industry: float = 0.0
+    score_location: float = 0.0
+    score_salary: float = 0.0
+    total_score: float = 0.0
+    score_details: dict | None = None
+    created_at: datetime | None = None

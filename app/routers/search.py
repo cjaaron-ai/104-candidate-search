@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
-from app.database import get_db
-from app.models.candidate import Candidate, CandidateScore
-from app.models.job import JobDescription
+from app.firestore import get_db
+from app.repositories.jobs import JobRepository
+from app.repositories.candidates import CandidateRepository, CandidateScoreRepository
 from app.services.search_service import search_and_score
 from app.services.profile_enrichment import enrich_candidate_profile
 from app.config import settings
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/search", tags=["Search"])
 
 
 @router.post("/{job_id}")
-async def trigger_search(job_id: int, db: Session = Depends(get_db)):
+async def trigger_search(job_id: int, db: firestore.Client = Depends(get_db)):
     """手動觸發對特定 JD 的搜尋與評分"""
     try:
         result = await search_and_score(job_id, db)
@@ -27,27 +27,25 @@ async def trigger_search(job_id: int, db: Session = Depends(get_db)):
 def get_search_results(
     job_id: int,
     min_score: float | None = None,
-    db: Session = Depends(get_db),
+    db: firestore.Client = Depends(get_db),
 ):
     """取得特定 JD 的搜尋結果（已評分排序）"""
-    job = db.query(JobDescription).filter(JobDescription.id == job_id).first()
+    job_repo = JobRepository(db)
+    job = job_repo.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     threshold = min_score if min_score is not None else settings.scorecard_threshold
 
-    scores = (
-        db.query(CandidateScore)
-        .filter(CandidateScore.job_id == job_id)
-        .order_by(CandidateScore.total_score.desc())
-        .all()
-    )
+    score_repo = CandidateScoreRepository(db)
+    cand_repo = CandidateRepository(db)
+    scores = score_repo.get_scores_for_job(job_id)
 
     results = []
     for score in scores:
-        if score.total_score < threshold:
+        if score.get("total_score", 0) < threshold:
             continue
-        candidate = db.query(Candidate).filter(Candidate.id == score.candidate_id).first()
+        candidate = cand_repo.get_candidate(score["candidate_id"])
         if candidate:
             results.append({
                 "candidate": {
@@ -63,14 +61,14 @@ def get_search_results(
                     "profile_url": candidate.profile_url,
                     "status": candidate.status,
                 },
-                "total_score": score.total_score,
-                "score_skills": score.score_skills,
-                "score_experience": score.score_experience,
-                "score_education": score.score_education,
-                "score_industry": score.score_industry,
-                "score_location": score.score_location,
-                "score_salary": score.score_salary,
-                "score_details": score.score_details,
+                "total_score": score.get("total_score", 0),
+                "score_skills": score.get("score_skills", 0),
+                "score_experience": score.get("score_experience", 0),
+                "score_education": score.get("score_education", 0),
+                "score_industry": score.get("score_industry", 0),
+                "score_location": score.get("score_location", 0),
+                "score_salary": score.get("score_salary", 0),
+                "score_details": score.get("score_details"),
             })
 
     return {
@@ -86,24 +84,24 @@ def get_search_results(
 def update_candidate_status(
     candidate_id: int,
     status: str,
-    db: Session = Depends(get_db),
+    db: firestore.Client = Depends(get_db),
 ):
-    """更新候選人狀態（new/contacted/interviewed/rejected/hired）"""
+    """更新候選人狀態"""
     valid_statuses = {"new", "contacted", "interviewed", "rejected", "hired"}
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Status must be one of: {valid_statuses}")
 
-    candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
+    cand_repo = CandidateRepository(db)
+    candidate = cand_repo.get_candidate(candidate_id)
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
-    candidate.status = status
-    db.commit()
+    cand_repo.update_candidate(candidate_id, {"status": status})
     return {"message": f"Candidate {candidate_id} status updated to {status}"}
 
 
 @router.post("/candidates/{candidate_id}/enrich")
-async def trigger_enrich_candidate(candidate_id: int, db: Session = Depends(get_db)):
+async def trigger_enrich_candidate(candidate_id: int, db: firestore.Client = Depends(get_db)):
     """爬取候選人完整履歷以豐富化資料"""
     try:
         candidate = await enrich_candidate_profile(candidate_id, db)

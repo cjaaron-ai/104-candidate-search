@@ -1,5 +1,5 @@
 """
-定期排程模組 — 可透過環境變數設定排程時間，或停用排程改用外部觸發（如 GitHub Actions）
+定期排程模組 — 可透過環境變數設定排程時間，或停用排程改用外部觸發
 """
 
 import logging
@@ -7,8 +7,8 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
-from app.database import SessionLocal
-from app.models.job import JobDescription
+from app.firestore import get_firestore_client
+from app.repositories.jobs import JobRepository
 from app.services.search_service import search_and_score
 from app.services.notifier import notify_search_results, notify_error
 
@@ -20,12 +20,12 @@ scheduler = AsyncIOScheduler()
 async def scheduled_search_all():
     """排程任務：對所有啟用中的 JD 執行搜尋，完成後發送 Telegram 通知"""
     logger.info("開始執行排程搜尋...")
-    db = SessionLocal()
+    db = get_firestore_client()
+    job_repo = JobRepository(db)
     all_results = []
-    has_error = False
 
     try:
-        jobs = db.query(JobDescription).filter(JobDescription.is_active == 1).all()
+        jobs = job_repo.list_jobs(active_only=True)
         for job in jobs:
             try:
                 result = await search_and_score(job.id, db)
@@ -35,13 +35,11 @@ async def scheduled_search_all():
                     f"{result['above_threshold']} 位達標"
                 )
             except Exception as e:
-                has_error = True
                 logger.error(f"職缺 '{job.title}' 搜尋失敗: {e}")
                 await notify_error(f"職缺「{job.title}」搜尋失敗: {e}")
-    finally:
-        db.close()
+    except Exception as e:
+        logger.error(f"排程搜尋失敗: {e}")
 
-    # 發送搜尋結果通知
     if all_results:
         await notify_search_results(all_results)
 
@@ -50,7 +48,7 @@ async def scheduled_search_all():
 
 def start_scheduler():
     if not settings.schedule_cron_hour:
-        logger.info("排程未設定（SCHEDULE_CRON_HOUR 為空），跳過排程啟動。請使用 API 或 GitHub Actions 手動觸發。")
+        logger.info("排程未設定（SCHEDULE_CRON_HOUR 為空），跳過排程啟動。")
         return
 
     scheduler.add_job(

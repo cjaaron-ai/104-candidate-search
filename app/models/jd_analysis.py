@@ -1,19 +1,17 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, ForeignKey, func
+from dataclasses import dataclass
+from datetime import datetime
 
-from app.database import Base
 
-
-class JDAnalysis(Base):
-    __tablename__ = "jd_analyses"
-
-    id = Column(Integer, primary_key=True, index=True)
-    job_id = Column(Integer, ForeignKey("job_descriptions.id"), index=True)
-    analysis_type = Column(String(30))  # "competitive" / "resume_optimization"
-    target_url = Column(String(500))
-    competitor_count = Column(Integer, default=0)
-    summary = Column(JSON)
-    recommendations = Column(JSON)
-    report_markdown = Column(Text)
-    status = Column(String(20), default="pending")
-    created_at = Column(DateTime, server_default=func.now())
-    completed_at = Column(DateTime)
+@dataclass
+class JDAnalysis:
+    id: int = 0
+    job_id: int | None = None
+    analysis_type: str | None = None
+    target_url: str | None = None
+    competitor_count: int = 0
+    summary: dict | None = None
+    recommendations: list | None = None
+    report_markdown: str | None = None
+    status: str = "pending"
+    created_at: datetime | None = None
+    completed_at: datetime | None = None

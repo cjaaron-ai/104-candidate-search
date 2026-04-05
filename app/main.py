@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.database import Base, engine
 from app.routers import jobs, search, analysis
 from app.services.scheduler import start_scheduler, stop_scheduler
 
@@ -13,7 +12,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    Base.metadata.create_all(bind=engine)
     start_scheduler()
     yield
     # Shutdown
@@ -36,7 +34,7 @@ app.include_router(analysis.router)
 def root():
     return {
         "name": "104 Candidate Search System",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "docs": "/docs",
     }
 

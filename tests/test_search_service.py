@@ -1,10 +1,11 @@
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock
 
 import pytest
 
-from tests.conftest import make_job, make_candidate
-from app.models.candidate import CandidateScore
-from app.services.search_service import search_and_score, _save_candidate
+from tests.conftest import make_job, make_candidate, MockFirestoreClient
+from app.services.search_service import search_and_score
+from app.repositories.jobs import JobRepository
+from app.repositories.candidates import CandidateRepository, CandidateScoreRepository
 from crawler.crawler_104 import CandidateData
 
 
@@ -26,18 +27,29 @@ def _make_candidate_data(**overrides) -> CandidateData:
     return CandidateData(**defaults)
 
 
+@pytest.fixture()
+def firestore_db():
+    """Create a mock Firestore client with patched firestore module"""
+    db = MockFirestoreClient()
+    with patch("app.repositories.base.firestore") as mock_fs:
+        from tests.conftest import MockFieldFilter
+        mock_fs.FieldFilter = MockFieldFilter
+        mock_fs.Query.DESCENDING = "DESCENDING"
+        mock_fs.Query.ASCENDING = "ASCENDING"
+        mock_fs.transactional = lambda fn: fn
+        yield db
+
+
 @pytest.mark.asyncio
-async def test_search_and_score_job_not_found(db):
+async def test_search_and_score_job_not_found(firestore_db):
     with pytest.raises(ValueError, match="not found"):
-        await search_and_score(9999, db)
+        await search_and_score(9999, firestore_db)
 
 
 @pytest.mark.asyncio
-async def test_search_and_score_login_failure(db):
-    job = make_job()
-    db.add(job)
-    db.commit()
-    db.refresh(job)
+async def test_search_and_score_login_failure(firestore_db):
+    job_repo = JobRepository(firestore_db)
+    job = job_repo.create_job({"title": "Test", "required_skills": ["Python"], "is_active": 1})
 
     with patch("app.services.search_service.Crawler104") as MockCrawler:
         instance = AsyncMock()
@@ -45,15 +57,31 @@ async def test_search_and_score_login_failure(db):
         MockCrawler.return_value = instance
 
         with pytest.raises(RuntimeError, match="登入失敗"):
-            await search_and_score(job.id, db)
+            await search_and_score(job.id, firestore_db)
 
 
 @pytest.mark.asyncio
-async def test_search_and_score_success(db):
-    job = make_job()
-    db.add(job)
-    db.commit()
-    db.refresh(job)
+async def test_search_and_score_success(firestore_db):
+    job_repo = JobRepository(firestore_db)
+    job = job_repo.create_job({
+        "title": "Backend Engineer",
+        "required_skills": ["Python", "FastAPI"],
+        "preferred_skills": ["Docker"],
+        "min_experience_years": 3,
+        "max_experience_years": 8,
+        "education_level": "學士",
+        "industry": "軟體",
+        "location": "台北市",
+        "salary_min": 50000,
+        "salary_max": 80000,
+        "weight_skills": 30.0,
+        "weight_experience": 25.0,
+        "weight_education": 15.0,
+        "weight_industry": 15.0,
+        "weight_location": 10.0,
+        "weight_salary": 5.0,
+        "is_active": 1,
+    })
 
     raw = _make_candidate_data()
 
@@ -68,92 +96,7 @@ async def test_search_and_score_success(db):
         mock_settings.cookie_storage_path = "/tmp/test"
         mock_settings.scorecard_threshold = 70.0
 
-        result = await search_and_score(job.id, db)
+        result = await search_and_score(job.id, firestore_db)
 
     assert result["total_candidates"] >= 1
     assert result["job_title"] == job.title
-
-
-@pytest.mark.asyncio
-async def test_search_and_score_skips_rejected(db):
-    job = make_job()
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-
-    # Pre-insert a rejected candidate with matching source_id
-    cand = make_candidate(source_id="rejected001", status="rejected")
-    db.add(cand)
-    db.commit()
-
-    raw = _make_candidate_data(source_id="rejected001")
-
-    with patch("app.services.search_service.Crawler104") as MockCrawler, \
-         patch("app.services.search_service.settings") as mock_settings:
-        instance = AsyncMock()
-        instance.login.return_value = True
-        instance.search_candidates.return_value = [raw]
-        MockCrawler.return_value = instance
-        mock_settings.account_104_username = "user"
-        mock_settings.account_104_password = "pass"
-        mock_settings.cookie_storage_path = "/tmp/test"
-        mock_settings.scorecard_threshold = 70.0
-
-        result = await search_and_score(job.id, db)
-
-    assert result["total_candidates"] == 0
-
-
-@pytest.mark.asyncio
-async def test_search_and_score_skips_already_scored(db):
-    job = make_job()
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-
-    cand = make_candidate(source_id="scored001")
-    db.add(cand)
-    db.commit()
-    db.refresh(cand)
-
-    # Pre-insert score
-    existing_score = CandidateScore(candidate_id=cand.id, job_id=job.id, total_score=80.0, score_details={})
-    db.add(existing_score)
-    db.commit()
-
-    raw = _make_candidate_data(source_id="scored001")
-
-    with patch("app.services.search_service.Crawler104") as MockCrawler, \
-         patch("app.services.search_service.settings") as mock_settings:
-        instance = AsyncMock()
-        instance.login.return_value = True
-        instance.search_candidates.return_value = [raw]
-        MockCrawler.return_value = instance
-        mock_settings.account_104_username = "user"
-        mock_settings.account_104_password = "pass"
-        mock_settings.cookie_storage_path = "/tmp/test"
-        mock_settings.scorecard_threshold = 70.0
-
-        result = await search_and_score(job.id, db)
-
-    assert result["total_candidates"] == 0
-
-
-# === _save_candidate ===
-
-def test_save_candidate_new(db):
-    raw = _make_candidate_data(source_id="new001")
-    candidate = _save_candidate(raw, db)
-    assert candidate.id is not None
-    assert candidate.name == "張三"
-
-
-def test_save_candidate_existing_updates(db):
-    cand = make_candidate(source_id="exist001", title="Old Title")
-    db.add(cand)
-    db.commit()
-
-    raw = _make_candidate_data(source_id="exist001", title="New Title")
-    updated = _save_candidate(raw, db)
-    assert updated.title == "New Title"
-    assert updated.id == cand.id

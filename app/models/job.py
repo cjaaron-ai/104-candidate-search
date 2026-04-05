@@ -1,42 +1,40 @@
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, JSON, func
+from dataclasses import dataclass, field
+from datetime import datetime
 
-from app.database import Base
 
-
-class JobDescription(Base):
-    __tablename__ = "job_descriptions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String(200), nullable=False)
-    department = Column(String(100))
-    description = Column(Text)
-    required_skills = Column(JSON)  # ["Python", "FastAPI", ...]
-    preferred_skills = Column(JSON)
-    min_experience_years = Column(Integer, default=0)
-    max_experience_years = Column(Integer)
-    education_level = Column(String(50))  # 學士/碩士/博士
-    industry = Column(String(100))
-    location = Column(String(100))
-    salary_min = Column(Integer)
-    salary_max = Column(Integer)
+@dataclass
+class JobDescription:
+    id: int = 0
+    title: str = ""
+    department: str | None = None
+    description: str | None = None
+    required_skills: list[str] = field(default_factory=list)
+    preferred_skills: list[str] = field(default_factory=list)
+    min_experience_years: int = 0
+    max_experience_years: int | None = None
+    education_level: str | None = None
+    industry: str | None = None
+    location: str | None = None
+    salary_min: int | None = None
+    salary_max: int | None = None
 
     # V2: URL 匯入相關欄位
-    source_url = Column(String(500))
-    source_id = Column(String(100))
-    company = Column(String(200))
-    benefits = Column(JSON)
-    salary_type = Column(String(20))        # monthly/annual/negotiable
-    full_description = Column(Text)
-    import_method = Column(String(20), default="manual")  # "manual" / "url"
+    source_url: str | None = None
+    source_id: str | None = None
+    company: str | None = None
+    benefits: list[str] | None = None
+    salary_type: str | None = None
+    full_description: str | None = None
+    import_method: str = "manual"
 
     # Scorecard 權重設定
-    weight_skills = Column(Float, default=30.0)
-    weight_experience = Column(Float, default=25.0)
-    weight_education = Column(Float, default=15.0)
-    weight_industry = Column(Float, default=15.0)
-    weight_location = Column(Float, default=10.0)
-    weight_salary = Column(Float, default=5.0)
+    weight_skills: float = 30.0
+    weight_experience: float = 25.0
+    weight_education: float = 15.0
+    weight_industry: float = 15.0
+    weight_location: float = 10.0
+    weight_salary: float = 5.0
 
-    is_active = Column(Integer, default=1)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    is_active: int = 1
+    created_at: datetime | None = None
+    updated_at: datetime | None = None

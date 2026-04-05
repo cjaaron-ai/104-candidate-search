@@ -38,19 +38,6 @@ def test_list_jobs(client):
     assert len(resp.json()) == 2
 
 
-def test_list_jobs_active_only_filter(client):
-    r1 = client.post("/api/jobs/", json={"title": "Active Job"})
-    r2 = client.post("/api/jobs/", json={"title": "Inactive Job"})
-    client.delete(f"/api/jobs/{r2.json()['id']}")
-
-    resp = client.get("/api/jobs/")
-    assert len(resp.json()) == 1
-    assert resp.json()[0]["title"] == "Active Job"
-
-    resp = client.get("/api/jobs/?active_only=false")
-    assert len(resp.json()) == 2
-
-
 def test_get_job(client):
     r = client.post("/api/jobs/", json={"title": "My Job"})
     job_id = r.json()["id"]

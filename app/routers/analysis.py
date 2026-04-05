@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
-from app.database import get_db
-from app.models.jd_analysis import JDAnalysis
+from app.firestore import get_db
+from app.repositories.analyses import AnalysisRepository
 from app.schemas.analysis import (
     CompetitiveAnalysisRequest,
     JDOptimizeRequest,
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/analysis", tags=["Analysis"])
 async def trigger_competitive_analysis(
     job_id: int,
     req: CompetitiveAnalysisRequest | None = None,
-    db: Session = Depends(get_db),
+    db: firestore.Client = Depends(get_db),
 ):
     """觸發競爭 JD 分析"""
     max_comp = req.max_competitors if req else 10
@@ -35,7 +35,7 @@ async def trigger_competitive_analysis(
 async def trigger_jd_optimization(
     job_id: int,
     req: JDOptimizeRequest,
-    db: Session = Depends(get_db),
+    db: firestore.Client = Depends(get_db),
 ):
     """觸發 JD 優化分析"""
     try:
@@ -48,18 +48,20 @@ async def trigger_jd_optimization(
 
 
 @router.get("/{analysis_id}", response_model=AnalysisResponse)
-def get_analysis(analysis_id: int, db: Session = Depends(get_db)):
+def get_analysis(analysis_id: int, db: firestore.Client = Depends(get_db)):
     """查詢分析結果"""
-    analysis = db.query(JDAnalysis).filter(JDAnalysis.id == analysis_id).first()
+    repo = AnalysisRepository(db)
+    analysis = repo.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return analysis
 
 
 @router.get("/{analysis_id}/report")
-def get_analysis_report(analysis_id: int, db: Session = Depends(get_db)):
+def get_analysis_report(analysis_id: int, db: firestore.Client = Depends(get_db)):
     """取得 Markdown 格式報告"""
-    analysis = db.query(JDAnalysis).filter(JDAnalysis.id == analysis_id).first()
+    repo = AnalysisRepository(db)
+    analysis = repo.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return {"report_markdown": analysis.report_markdown or "報告尚未生成"}

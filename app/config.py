@@ -2,7 +2,8 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    database_url: str = "sqlite:///./candidates.db"
+    # GCP 專案
+    gcp_project_id: str = ""
 
     # 104 企業帳號
     account_104_username: str = ""
